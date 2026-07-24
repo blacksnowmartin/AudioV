@@ -24,6 +24,7 @@ let analyserConnected = false;
 let rendererMode = 'three';
 let canvasContext = null;
 let canvasElement = null;
+let activeObjectUrl = null;
 
 function initScene() {
   scene = new THREE.Scene();
@@ -81,26 +82,32 @@ function setupThreeScene() {
   const barCount = 64;
   const radius = 6.2;
   for (let i = 0; i < barCount; i += 1) {
-    const geometry = new THREE.BoxGeometry(0.18, 1, 0.18);
-    const material = new THREE.MeshStandardMaterial({
-      color: new THREE.Color().setHSL(i / barCount, 0.8, 0.6),
-      emissive: new THREE.Color().setHSL(i / barCount, 0.8, 0.15),
-      emissiveIntensity: 0.2,
-      roughness: 0.28,
-      metalness: 0.15,
+    const geometry = new THREE.CylinderGeometry(0.2, 0.2, 1.2, 12, 1);
+    const material = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color().setHSL(i / barCount, 0.8, 0.58),
+      emissive: new THREE.Color().setHSL(i / barCount, 0.8, 0.14),
+      emissiveIntensity: 0.22,
+      roughness: 0.2,
+      metalness: 0.18,
+      clearcoat: 0.45,
+      transparent: true,
+      opacity: 0.95,
     });
 
     const mesh = new THREE.Mesh(geometry, material);
     const angle = (i / barCount) * Math.PI * 2;
     mesh.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
     mesh.rotation.y = angle;
-    mesh.scale.y = 0.6;
+    mesh.rotation.z = Math.PI / 2;
+    mesh.scale.y = 0.8;
+    mesh.scale.x = 1;
+    mesh.scale.z = 1;
     mesh.position.y = -0.35;
     barsGroup.add(mesh);
   }
 
-  const ringGeometry = new THREE.TorusGeometry(5.4, 0.04, 16, 128);
-  const ringMaterial = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.3 });
+  const ringGeometry = new THREE.TorusGeometry(5.4, 0.07, 16, 128);
+  const ringMaterial = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.32 });
   ring = new THREE.Mesh(ringGeometry, ringMaterial);
   ring.rotation.x = Math.PI / 2;
   scene.add(ring);
@@ -186,6 +193,31 @@ async function startMicInput() {
   }
 }
 
+function waitForAudioReady(element) {
+  if (element.readyState >= 2) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      element.removeEventListener('canplaythrough', onReady);
+      element.removeEventListener('error', onError);
+    };
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error('The selected file could not be decoded.'));
+    };
+
+    element.addEventListener('canplaythrough', onReady, { once: true });
+    element.addEventListener('error', onError, { once: true });
+    element.load();
+  });
+}
+
 async function loadTrack(file) {
   if (!file) return;
   try {
@@ -201,16 +233,25 @@ async function loadTrack(file) {
       });
     }
 
+    if (activeObjectUrl) {
+      URL.revokeObjectURL(activeObjectUrl);
+    }
+
     const objectUrl = URL.createObjectURL(file);
+    activeObjectUrl = objectUrl;
     audioElement.src = objectUrl;
-    audioElement.load();
+    audioElement.currentTime = 0;
+    audioElement.volume = 1;
 
     if (!mediaElementSource) {
       mediaElementSource = audioContext.createMediaElementSource(audioElement);
     }
 
+    mediaElementSource.disconnect();
     mediaElementSource.connect(analyserNode);
     activeInput = mediaElementSource;
+
+    await waitForAudioReady(audioElement);
 
     playButton.disabled = false;
     playButton.textContent = 'Play';
@@ -225,14 +266,19 @@ async function togglePlayback() {
   if (audioContext.state === 'suspended') {
     await audioContext.resume();
   }
-  if (audioElement.paused) {
-    await audioElement.play();
-    playButton.textContent = 'Pause';
-    status.textContent = 'Playback started.';
-  } else {
-    audioElement.pause();
-    playButton.textContent = 'Play';
-    status.textContent = 'Playback paused.';
+
+  try {
+    if (audioElement.paused) {
+      await audioElement.play();
+      playButton.textContent = 'Pause';
+      status.textContent = 'Playback started.';
+    } else {
+      audioElement.pause();
+      playButton.textContent = 'Play';
+      status.textContent = 'Playback paused.';
+    }
+  } catch (error) {
+    status.textContent = `Playback failed: ${error.message}`;
   }
 }
 
@@ -264,8 +310,28 @@ function drawCanvasFrame(beat) {
     const barHeight = 14 + value * maxHeight;
     const x = width * 0.1 + i * barWidth * 1.1;
     const hue = 185 + value * 120;
-    canvasContext.fillStyle = `hsl(${hue}, 85%, ${50 + value * 15}%)`;
-    canvasContext.fillRect(x, centerY - barHeight / 2, barWidth, barHeight);
+    const color = `hsl(${hue}, 85%, ${50 + value * 15}%)`;
+    const glow = canvasContext.createLinearGradient(x, centerY - barHeight / 2, x, centerY + barHeight / 2);
+    glow.addColorStop(0, color);
+    glow.addColorStop(1, 'rgba(248, 250, 252, 0.9)');
+
+    const radius = Math.max(6, barWidth * 0.4);
+    canvasContext.beginPath();
+    canvasContext.moveTo(x + radius, centerY - barHeight / 2);
+    canvasContext.lineTo(x + barWidth - radius, centerY - barHeight / 2);
+    canvasContext.quadraticCurveTo(x + barWidth, centerY - barHeight / 2, x + barWidth, centerY - barHeight / 2 + radius);
+    canvasContext.lineTo(x + barWidth, centerY + barHeight / 2 - radius);
+    canvasContext.quadraticCurveTo(x + barWidth, centerY + barHeight / 2, x + barWidth - radius, centerY + barHeight / 2);
+    canvasContext.lineTo(x + radius, centerY + barHeight / 2);
+    canvasContext.quadraticCurveTo(x, centerY + barHeight / 2, x, centerY + barHeight / 2 - radius);
+    canvasContext.lineTo(x, centerY - barHeight / 2 + radius);
+    canvasContext.quadraticCurveTo(x, centerY - barHeight / 2, x + radius, centerY - barHeight / 2);
+    canvasContext.closePath();
+    canvasContext.fillStyle = glow;
+    canvasContext.shadowBlur = 16 + value * 12;
+    canvasContext.shadowColor = `hsla(${hue}, 90%, 65%, 0.7)`;
+    canvasContext.fill();
+    canvasContext.shadowBlur = 0;
   }
 
   canvasContext.beginPath();
@@ -288,6 +354,12 @@ function drawCanvasFrame(beat) {
   pulseGradient.addColorStop(1, 'rgba(125, 211, 252, 0)');
   canvasContext.fillStyle = pulseGradient;
   canvasContext.fill();
+
+  canvasContext.beginPath();
+  canvasContext.arc(width * 0.5, height * 0.28, 26 + beat * 15, 0, Math.PI * 2);
+  canvasContext.strokeStyle = `rgba(191, 219, 254, ${0.75 + beat * 0.15})`;
+  canvasContext.lineWidth = 3;
+  canvasContext.stroke();
 }
 
 function animate() {
@@ -303,9 +375,11 @@ function animate() {
     if (rendererMode === 'three') {
       barsGroup.children.forEach((bar, index) => {
         const normalized = analyserData[Math.floor((index / barsGroup.children.length) * analyserData.length)] / 255;
-        const targetHeight = 0.6 + normalized * 7.2;
+        const targetHeight = 0.9 + normalized * 5.8;
         bar.scale.y = THREE.MathUtils.lerp(bar.scale.y, targetHeight, 0.16);
-        bar.position.y = bar.scale.y / 2 - 1.5;
+        bar.scale.x = THREE.MathUtils.lerp(bar.scale.x, 0.9 + normalized * 0.2, 0.16);
+        bar.scale.z = THREE.MathUtils.lerp(bar.scale.z, 0.9 + normalized * 0.2, 0.16);
+        bar.position.y = bar.scale.y / 2 - 1.45;
         const hue = 0.55 + normalized * 0.25;
         bar.material.color.setHSL(hue, 0.8, 0.55 + normalized * 0.15);
         bar.material.emissive.setHSL(hue, 0.9, 0.16 + normalized * 0.2);
