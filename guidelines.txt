@@ -1,0 +1,1 @@
+We want the music visualizer not to have the boxy look ( the rectangular fell) but gradient circular edges for visualizers and enable the audio to play since the existing code does not play the audio only visualizers are showing up
